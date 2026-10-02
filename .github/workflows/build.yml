@@ -30,16 +30,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          mkdir -p ./input
           gh release download "${{ inputs.tag }}" \
             --repo ${{ github.repository }} \
             --pattern "*.zip" \
             --dir ./input
+          echo "=== Isi folder input ==="
+          ls -la ./input
 
       - name: Extract ZIP
         run: |
-          mkdir -p ./project
-          unzip -q ./input/*.zip -d ./project
-          ls -la ./project
+          mkdir -p ./extract
+          unzip -q ./input/*.zip -d ./extract
+          echo "=== Struktur folder (depth 3) ==="
+          find ./extract -maxdepth 3 -type d
+          echo "=== Cari pubspec.yaml ==="
+          find ./extract -name "pubspec.yaml" -type f
+
+      - name: Locate Project Root
+        id: locate
+        run: |
+          PUBSPEC=$(find ./extract -name "pubspec.yaml" -type f -not -path "*/.*" | head -1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "::error::❌ pubspec.yaml tidak ditemukan! Pastikan ZIP berisi project Flutter lengkap dengan pubspec.yaml."
+            echo "=== Isi folder extract ==="
+            find ./extract -maxdepth 3
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$PUBSPEC")
+          echo "✅ Project ditemukan di: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -53,19 +73,40 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Build APK
-        working-directory: ./project
+      - name: Flutter Doctor
+        run: flutter doctor -v
+
+      - name: Flutter Pub Get
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
+          echo "=== Isi folder project ==="
+          ls -la
+          echo "=== Jalankan flutter pub get ==="
           flutter pub get
+
+      - name: Build APK
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: |
+          echo "=== Build type: ${{ inputs.build_type }} ==="
           if [ "${{ inputs.build_type }}" = "debug" ]; then
             flutter build apk --debug
           else
             flutter build apk --release
           fi
 
+      - name: List Output APK
+        if: always()
+        run: |
+          echo "=== Cari file APK ==="
+          find . -name "*.apk" -type f -exec ls -lh {} \;
+
       - name: Upload APK Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: apk-output
-          path: ./project/build/app/outputs/flutter-apk/*.apk
+          path: |
+            **/build/app/outputs/flutter-apk/*.apk
+            **/build/app/outputs/apk/**/*.apk
           retention-days: 7
+          if-no-files-found: error
